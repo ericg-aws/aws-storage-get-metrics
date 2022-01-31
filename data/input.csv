@@ -1,0 +1,3 @@
+type,region,instance
+rds,us-east-1,database-1
+rds,us-east-1,database-2
