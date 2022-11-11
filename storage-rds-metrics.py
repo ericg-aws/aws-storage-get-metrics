@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # purpose: to pull and calculate throughput and IO statistics for a set of RDS instances; data source source is cloudwatch
-# usage: python -i data/input.csv storage-get-metrics.py
+# usage: python -i data/rds-input.csv storage-get-metrics.py
 
 import argparse
 import boto3
