@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-# purpose: to pull cloudwatch statistics for a set of RDS instances and Ec2 EBS IDs, using a csv for inputs
+# purpose: to pull and calculate throughput and IO statistics for a set of RDS instances; data source source is cloudwatch
+# usage: python -i data/input.csv storage-get-metrics.py
+
 import argparse
 import boto3
 from botocore.config import Config
@@ -9,8 +11,7 @@ import numpy as np
 import time
 from random import randrange
 
-
-# parse command-line arguments for region and input file
+# parse command-line arguments for input instance file, output file, and days back to pull metrics 
 # csv must have columns: type,region,instance
 def parse_args():
     parser = argparse.ArgumentParser(description='instance check script')
