@@ -1,7 +1,5 @@
 #!/usr/bin/env python
-# purpose: to pull and calculate throughput and IO statistics for a set of EBS volumes; data source source is cloudwatch
-# usage: python get-ebs-metrics.py
-
+# purpose: to pull cloudwatch statistics for a set of EBS IDs, using an Excel spreadsheet as input 
 import argparse
 import boto3
 from botocore.config import Config
@@ -9,21 +7,21 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 import time
-from random import randrange
-import sys
 
-# parse command-line arguments for input instance file, output file, and days back to pull metrics 
-# csv must have columns: type,region,instance
+# parse command-line arguments for region and input file
+# xlsx file must have columns: instance_id, instance_name, instance_type, volume_type, volume_name, volume_id, volume_considered
+# days of metrics history to consider 
 def parse_args():
     parser = argparse.ArgumentParser(description='instance check script')
     parser.add_argument('-i', '--input_file', help='input_file', type=str, required=False)
     parser.add_argument('-o', '--ouput_file', help='ouput_file', type=str, required=False)
     parser.add_argument('-d', '--days_back', help='days_back', type=int, required=False)
-    parser.set_defaults(input_file='data/ebs-input.csv', output_file='data/ebs-cw-output.csv', days_back=30)
+    parser.set_defaults(input_file='data/input_ebs_volumes.xlsx', output_file='data/ebs-cw-output.csv', days_back=30)
     args = parser.parse_args()
     return args
 
-def cw_pull_metric(cw_client, df, metric_name, namespace, ebs_id, stat, unit, period, days_back):
+# poll CloudWatch for EBS metrics
+def cw_pull_metric(cw_client, df, metric_name, namespace, vol_id, stat, unit, period, days_back):
     cw_response = cw_client.get_metric_data(
         MetricDataQueries=[
             {
@@ -35,7 +33,7 @@ def cw_pull_metric(cw_client, df, metric_name, namespace, ebs_id, stat, unit, pe
                         'Dimensions': [
                             {
                                 'Name': 'VolumeId',
-                                'Value': ebs_id
+                                'Value': vol_id
                             },
                         ]
                     },
@@ -72,75 +70,14 @@ def calc_avg_iop(row_dict):
     row_dict['IoSize'] = divide_numbers(row_dict['VolumeBytesSum'], row_dict['VolumeOpsSum'])
     return row_dict
 
-def get_ebs_tag_value(key, tags):
-    for entry in tags:
-        if key in entry.values():
-            tag_name = entry['Value']
-    return tag_name
-
-def get_ec2_tag_value(key, ec2_instance_id):
-    try:
-        ec2 = boto3.resource('ec2')
-        ec2instance = ec2.Instance(ec2_instance_id)
-        ec2_instance_name = ''
-        for tags in ec2instance.tags:
-            if tags["Key"] == 'Name':
-                ec2_instance_name = tags["Value"]
-        return ec2_instance_name
-    except Exception as e: 
-        print(f'An error occurred during making call for Ec2 instance id: {ec2_instance_id}')
-        print(e)
-        return 'NaN'
-
-def get_vol_info(args, vol_df):
-    
-    ebs_info_df = pd.DataFrame()
-    
-    # boto3 client config
-    config = Config(
-        retries = dict(
-            max_attempts = 10
-        )
-    )
-        
-    for row in vol_df.itertuples():
-        try:
-            row_dict = {}
-
-            ec2_client = boto3.client('ec2', region_name=row.region, config=config)
-            vol_info = ec2_client.describe_volumes(VolumeIds=[row.ebs_id])
-
-            row_dict['ebs_id'] = row.ebs_id
-            row_dict['ebs_name'] = get_ebs_tag_value('Name', vol_info['Volumes'][0]['Tags'])
-            row_dict['ebs_device'] = vol_info['Volumes'][0]['Attachments'][0]['Device']
-            row_dict['ec2_instance_id'] = vol_info['Volumes'][0]['Attachments'][0]['InstanceId']
-            row_dict['ec2_instance_name'] = get_ec2_tag_value('Name', row_dict['ec2_instance_id'])
-            row_dict['region'] = row.region
-            row_dict['az'] = vol_info['Volumes'][0]['AvailabilityZone']
-            row_dict['ebs_type'] = vol_info['Volumes'][0]['VolumeType']
-            row_dict['ebs_size'] = vol_info['Volumes'][0]['Size']
-            row_dict['ebs_iops'] = vol_info['Volumes'][0]['Iops']
-            row_dict['ebs_throughput'] = vol_info['Volumes'][0]['Throughput']
-
-        except Exception as e: 
-            print(f'An error occurred during making call for EBS id: {row.ebs_id}')
-            print(e)
-            pass
-
-        df_temp = pd.DataFrame(row_dict, index=[0])
-
-        nl = '\n'
-        pd.set_option('display.width', 200)
-        pd.set_option('display.colheader_justify', 'center')
-        print(f'Gathering info for EBS volume:{nl} {df_temp}')
-        ebs_info_df = pd.concat([ebs_info_df, df_temp])
-    return ebs_info_df 
-
-
-def get_ebs_data(args, ebs_info_df):
+def main():
+    args = parse_args()
 
     output_df = pd.DataFrame()
-
+    instance_df = pd.read_excel(args.input_file, sheet_name=1)
+    # remove volumes that do not have a 1 in the considered column 
+    instance_df = instance_df[instance_df.volume_considered != 0]
+    
     # ebs metrics of interest
     ebs_metrics = {
         'VolumeReadOps': 'Count',
@@ -156,18 +93,17 @@ def get_ebs_data(args, ebs_info_df):
     days_back = args.days_back
     month_span = days_back/30
     
-    # increasing attempts in case of rate limiting 
-    config = Config(
-        retries = dict(
-            max_attempts = 10
-        )
-    )
-
     # pandas group by per region, then iterate though each regions EBS volumes 
-    region_df = ebs_info_df.groupby('region')
-    for region, ebs_id in region_df:
+    region_df = instance_df.groupby("region")
+    for region, instance in region_df:
+        # increasing attempts in case of rate limiting 
+        config = Config(
+            retries = dict(
+                max_attempts = 10
+            )
+        )
         cw_client = boto3.client('cloudwatch', region_name=region, config=config)
-        for row in ebs_id.itertuples():
+        for row in instance.itertuples():
             row_dict = {}
             for stat in ebs_stat:
                 for metric_name, unit in ebs_metrics.items():
@@ -175,7 +111,7 @@ def get_ebs_data(args, ebs_info_df):
                         time.sleep(2)
                         df = pd.DataFrame()
                         # maximum statistic is only supported on Nitro-based instances
-                        df = cw_pull_metric(cw_client, df, metric_name, 'AWS/EBS', row.ebs_id, stat, unit, 300, days_back)
+                        df = cw_pull_metric(cw_client, df, metric_name, 'AWS/EBS', row.volume_id, stat, unit, 300, days_back)
                         # divide by 60 seconds 1 hertz data for a 60 second period 
                         if stat == 'Maximum':
                             df_max = df.div(60)
@@ -187,14 +123,15 @@ def get_ebs_data(args, ebs_info_df):
                             row_dict[metric_name + 'Sum'] = (df[metric_name].sum()/month_span)
                         
                         # can decide to remove any column but at least keep region and volumn_id
-                        row_dict['ec2_instance_id'] = row.ec2_instance_id
-                        row_dict['ec2_instance_name'] = row.ec2_instance_name
-                        row_dict['ebs_type'] = row.ebs_type
-                        row_dict['ebs_name'] = row.ebs_name
-                        row_dict['ebs_id'] = row.ebs_id
+                        row_dict['instance_id'] = row.instance_id
+                        row_dict['instance_name'] = row.instance_name
+                        row_dict['instance_type'] = row.instance_type
+                        row_dict['volume_type'] = row.volume_type
+                        row_dict['volume_name'] = row.volume_name
+                        row_dict['volume_id'] = row.volume_id
                         row_dict['region'] = row.region
                     except Exception as e: 
-                        print(f'An error occurred during making call for EBS id: {row.ebs_id}, metric: {metric_name}')
+                        print(f'An error occurred during making call for EBS id: {row.volume_id}, metric: {metric_name}')
                         print(e)
                         pass
             # calc IO average size - read and write combined
@@ -206,15 +143,6 @@ def get_ebs_data(args, ebs_info_df):
     # get dataframe column list for ordering csv columns 
     col_list = list(output_df.columns)
     output_df.to_csv(args.output_file, index=False, columns=(sorted(col_list, reverse=True)))
-
-def main():
-    args = parse_args()
-
-    vol_df = pd.read_csv(args.input_file)
-    # get volume and associated Ec2 instance information
-    ebs_info_df = get_vol_info(args, vol_df)
-    # pull Cloudwatch data for volumes and output to csv
-    get_ebs_data(args, ebs_info_df)
     
 if __name__ == "__main__":
     main()

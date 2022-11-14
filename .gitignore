@@ -23,7 +23,8 @@ override.tf.json
 
 # general 
 instance_list.csv
-output.csv
+*output.csv
+test.csv
 creds.cfg
 *pyc
 notebooks
