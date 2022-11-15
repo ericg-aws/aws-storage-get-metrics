@@ -72,11 +72,21 @@ def calc_avg_iop(row_dict):
     row_dict['IoSize'] = divide_numbers(row_dict['VolumeBytesSum'], row_dict['VolumeOpsSum'])
     return row_dict
 
-def get_ebs_tag_value(key, tags):
-    for entry in tags:
-        if key in entry.values():
-            tag_name = entry['Value']
-    return tag_name
+def get_ebs_tag_value(key, vol_info):
+    try:
+        tag_name = ''
+        if 'Tags' in vol_info['Volumes'][0]:
+            tags = vol_info['Volumes'][0]['Tags']
+            for entry in tags:
+                if key in entry.values():
+                    tag_name = entry['Value']
+        else:
+            tag_name = ''
+        return tag_name
+    except Exception as e: 
+        print(f'An error occurred searching for EBS tag')
+        print(e)
+        return ''
 
 def get_ec2_tag_value(key, ec2_instance_id):
     try:
@@ -91,6 +101,19 @@ def get_ec2_tag_value(key, ec2_instance_id):
         print(f'An error occurred during making call for Ec2 instance id: {ec2_instance_id}')
         print(e)
         return 'NaN'
+
+def get_ebs_param(param, vol_info, default=''):
+    try:
+        param_value = ''
+        if param in vol_info['Volumes'][0]:
+            param_value = vol_info['Volumes'][0][param]
+        else:
+            param_value = default
+        return param_value
+    except Exception as e: 
+        print(f'An error occurred searching for EBS parameter')
+        print(e)
+        return default
 
 def get_vol_info(args, vol_df):
     
@@ -109,9 +132,8 @@ def get_vol_info(args, vol_df):
 
             ec2_client = boto3.client('ec2', region_name=row.region, config=config)
             vol_info = ec2_client.describe_volumes(VolumeIds=[row.ebs_id])
-
             row_dict['ebs_id'] = row.ebs_id
-            row_dict['ebs_name'] = get_ebs_tag_value('Name', vol_info['Volumes'][0]['Tags'])
+            row_dict['ebs_name'] = get_ebs_tag_value('Name', vol_info)
             row_dict['ebs_device'] = vol_info['Volumes'][0]['Attachments'][0]['Device']
             row_dict['ec2_instance_id'] = vol_info['Volumes'][0]['Attachments'][0]['InstanceId']
             row_dict['ec2_instance_name'] = get_ec2_tag_value('Name', row_dict['ec2_instance_id'])
@@ -119,20 +141,20 @@ def get_vol_info(args, vol_df):
             row_dict['az'] = vol_info['Volumes'][0]['AvailabilityZone']
             row_dict['ebs_type'] = vol_info['Volumes'][0]['VolumeType']
             row_dict['ebs_size'] = vol_info['Volumes'][0]['Size']
-            row_dict['ebs_iops'] = vol_info['Volumes'][0]['Iops']
-            row_dict['ebs_throughput'] = vol_info['Volumes'][0]['Throughput']
+            row_dict['ebs_iops'] = get_ebs_param('Iops', vol_info)
+            row_dict['ebs_throughput'] = get_ebs_param('Throughput', vol_info)
 
         except Exception as e: 
             print(f'An error occurred during making call for EBS id: {row.ebs_id}')
             print(e)
-            pass
+            #pass
 
         df_temp = pd.DataFrame(row_dict, index=[0])
 
         nl = '\n'
         pd.set_option('display.width', 200)
         pd.set_option('display.colheader_justify', 'center')
-        print(f'Gathering info for EBS volume:{nl} {df_temp}')
+        print(f'Found info for EBS volume:{nl} {df_temp}')
         ebs_info_df = pd.concat([ebs_info_df, df_temp])
     return ebs_info_df 
 
@@ -192,7 +214,12 @@ def get_ebs_data(args, ebs_info_df):
                         row_dict['ebs_type'] = row.ebs_type
                         row_dict['ebs_name'] = row.ebs_name
                         row_dict['ebs_id'] = row.ebs_id
+                        row_dict['ebs_device'] = row.ebs_device
                         row_dict['region'] = row.region
+                        row_dict['ebs_size'] = row.ebs_size
+                        row_dict['ebs_throughput'] = row.ebs_throughput
+                        row_dict['ebs_iops'] = row.ebs_iops
+
                     except Exception as e: 
                         print(f'An error occurred during making call for EBS id: {row.ebs_id}, metric: {metric_name}')
                         print(e)
